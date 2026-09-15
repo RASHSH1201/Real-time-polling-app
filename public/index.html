@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Live Polling App</title>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+  :root {
+    --bg: #0f1115;
+    --card: #171a21;
+    --border: #2a2e37;
+    --text: #e8e9ec;
+    --muted: #8b8f99;
+    --accent: #5b8cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 40px 20px;
+  }
+  .wrap { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  p.sub { color: var(--muted); margin-top: 0; margin-bottom: 28px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  input, button {
+    font-size: 0.95rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    padding: 10px 12px;
+  }
+  input {
+    background: #0f1115;
+    color: var(--text);
+    width: 100%;
+    margin-bottom: 10px;
+  }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  button:hover { opacity: 0.9; }
+  .option-row { display: flex; gap: 8px; }
+  .option-row input { margin-bottom: 8px; }
+  .remove-btn {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    padding: 0 12px;
+  }
+  #pollView h2 { margin-top: 0; }
+  .option-bar-wrap { margin-bottom: 14px; }
+  .option-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.9rem;
+    margin-bottom: 4px;
+  }
+  .bar-track {
+    background: #0f1115;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    height: 28px;
+    overflow: hidden;
+  }
+  .bar-fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.4s ease;
+  }
+  .vote-btn {
+    margin-top: 6px;
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    padding: 6px 10px;
+    font-size: 0.85rem;
+  }
+  .total-votes { color: var(--muted); font-size: 0.85rem; margin-top: 16px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Live Polling App</h1>
+  <p class="sub">Create a poll and watch votes update in real time across every open tab.</p>
+
+  <div class="card" id="createCard">
+    <h2 style="margin-top:0;">Create a poll</h2>
+    <input id="questionInput" placeholder="Poll question" />
+    <div id="optionsContainer">
+      <div class="option-row">
+        <input class="optionInput" placeholder="Option 1" />
+      </div>
+      <div class="option-row">
+        <input class="optionInput" placeholder="Option 2" />
+      </div>
+    </div>
+    <button id="addOptionBtn" type="button">+ Add option</button>
+    <div style="margin-top:14px;">
+      <button id="createPollBtn" type="button">Create Poll</button>
+    </div>
+  </div>
+
+  <div class="card hidden" id="pollView">
+    <h2 id="pollQuestion"></h2>
+    <div id="optionsList"></div>
+    <div class="total-votes" id="totalVotes"></div>
+  </div>
+</div>
+
+<script>
+  const socket = io();
+  let currentPoll = null;
+
+  const optionsContainer = document.getElementById('optionsContainer');
+  const addOptionBtn = document.getElementById('addOptionBtn');
+  const createPollBtn = document.getElementById('createPollBtn');
+  const createCard = document.getElementById('createCard');
+  const pollView = document.getElementById('pollView');
+  const pollQuestion = document.getElementById('pollQuestion');
+  const optionsList = document.getElementById('optionsList');
+  const totalVotes = document.getElementById('totalVotes');
+
+  addOptionBtn.addEventListener('click', () => {
+    const row = document.createElement('div');
+    row.className = 'option-row';
+    row.innerHTML = `<input class="optionInput" placeholder="Option ${optionsContainer.children.length + 1}" />`;
+    optionsContainer.appendChild(row);
+  });
+
+  createPollBtn.addEventListener('click', async () => {
+    const question = document.getElementById('questionInput').value.trim();
+    const options = Array.from(document.querySelectorAll('.optionInput'))
+      .map((el) => el.value.trim())
+      .filter(Boolean);
+
+    if (!question || options.length < 2) {
+      alert('Enter a question and at least two options.');
+      return;
+    }
+
+    const res = await fetch('/api/polls', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, options })
+    });
+
+    if (!res.ok) {
+      alert('Could not create poll.');
+      return;
+    }
+
+    const poll = await res.json();
+    showPoll(poll);
+  });
+
+  function showPoll(poll) {
+    currentPoll = poll;
+    createCard.classList.add('hidden');
+    pollView.classList.remove('hidden');
+    socket.emit('joinPoll', poll._id);
+    renderPoll(poll);
+  }
+
+  function renderPoll(poll) {
+    pollQuestion.textContent = poll.question;
+    const total = poll.options.reduce((sum, o) => sum + o.votes, 0);
+
+    optionsList.innerHTML = '';
+    poll.options.forEach((opt, i) => {
+      const pct = total > 0 ? Math.round((opt.votes / total) * 100) : 0;
+      const wrap = document.createElement('div');
+      wrap.className = 'option-bar-wrap';
+      wrap.innerHTML = `
+        <div class="option-label">
+          <span>${opt.text}</span>
+          <span>${opt.votes} votes (${pct}%)</span>
+        </div>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:${pct}%"></div>
+        </div>
+        <button class="vote-btn" data-index="${i}">Vote</button>
+      `;
+      optionsList.appendChild(wrap);
+    });
+
+    totalVotes.textContent = `${total} total vote${total === 1 ? '' : 's'}`;
+
+    document.querySelectorAll('.vote-btn').forEach((btn) => {
+      btn.addEventListener('click', () => castVote(Number(btn.dataset.index)));
+    });
+  }
+
+  async function castVote(optionIndex) {
+    if (!currentPoll) return;
+    await fetch(`/api/polls/${currentPoll._id}/vote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ optionIndex })
+    });
+    // No local re-render here — the server broadcasts the updated
+    // poll back over the socket, which is what actually drives the UI.
+  }
+
+  socket.on('pollUpdated', (poll) => {
+    if (currentPoll && poll._id === currentPoll._id) {
+      currentPoll = poll;
+      renderPoll(poll);
+    }
+  });
+</script>
+</body>
+</html>
